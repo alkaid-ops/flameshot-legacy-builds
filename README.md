@@ -14,7 +14,9 @@ These builds use:
 - `CMAKE_OSX_ARCHITECTURES=arm64`
 - `CMAKE_OSX_DEPLOYMENT_TARGET=11.0`
 
-No Flameshot source changes are currently required. Patches, if ever needed, live in [`patches/`](patches/).
+No Flameshot source changes are required for macOS 11 itself. One patch is applied when needed:
+
+- `patches/0001-bundle-macos-translations.patch` backports upstream's macOS translation bundling fix (`#4986`) for tags created before that fix, so older releases such as `v14.0.0` can load the UI translations.
 
 ## Scope
 
