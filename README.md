@@ -1,8 +1,10 @@
-# Flameshot macOS 11+ (Big Sur) builds
+# Flameshot legacy builds
 
-![Sync upstream release](https://github.com/alkaid-ops/flameshot-macos11/actions/workflows/sync-release.yml/badge.svg)
+![Sync upstream release](https://github.com/alkaid-ops/flameshot-legacy-builds/actions/workflows/sync-release.yml/badge.svg)
 
-Unofficial Linux-style community rebuilds of [Flameshot](https://github.com/flameshot-org/flameshot) for **macOS 11 (Big Sur) and later, arm64 / Apple Silicon**.
+Unofficial rebuilds of [Flameshot](https://github.com/flameshot-org/flameshot) for legacy operating systems.
+
+Current target: **macOS 11 (Big Sur) and later, arm64 / Apple Silicon**.
 
 ## Why this repository exists
 
@@ -14,9 +16,33 @@ These builds use:
 - `CMAKE_OSX_ARCHITECTURES=arm64`
 - `CMAKE_OSX_DEPLOYMENT_TARGET=11.0`
 
-No Flameshot source changes are required for macOS 11 itself. One patch is applied when needed:
+## Build sources
 
-- `patches/0001-bundle-macos-translations.patch` backports upstream's macOS translation bundling fix (`#4986`) for tags created before that fix, so older releases such as `v14.0.0` can load the UI translations.
+### 1. Upstream release sync
+
+The workflow checks the latest stable release from `flameshot-org/flameshot` every 6 hours, rebuilds it, and publishes it here if a matching release does not already exist.
+
+### 2. Fix sets
+
+When an upstream release needs a small, important fix, a fix definition is added under [`fixes/`](fixes/):
+
+```yaml
+base: v15.0.rc1
+cherry_picks:
+  - <upstream-commit-sha>
+```
+
+Rules for fix sets:
+
+- Base is always an official upstream tag, never a master snapshot.
+- Only merged upstream commits are cherry-picked.
+- Scope is minimal: legacy OS compatibility, security, or critical UX fixes.
+- The release tag is the fix-set name, for example `v15.0.rc1-fix.1`.
+- Once upstream includes the fixes in a stable release, the fix set is retired.
+
+The current example is [`fixes/v15.0.rc1-fix.1.yml`](fixes/v15.0.rc1-fix.1.yml), which backports upstream `#4986` so the macOS app bundle contains the translation files.
+
+Additional patches, if ever needed, live in [`patches/`](patches/). They are applied only when they still apply cleanly.
 
 ## Scope
 
@@ -25,18 +51,20 @@ No Flameshot source changes are required for macOS 11 itself. One patch is appli
 | macOS | 11 (Big Sur) and later |
 | CPU | arm64 / Apple Silicon only |
 | Intel Macs | Not supported yet |
-| Flameshot versions | Upstream release tags, rebuilt automatically |
+| Other legacy platforms | Not yet; add a target when there is demand |
 
 ## Downloads
 
-See the [Releases](https://github.com/alkaid-ops/flameshot-macos11/releases) page.
+See the [Releases](https://github.com/alkaid-ops/flameshot-legacy-builds/releases) page.
 
-Artifacts are named like:
+Artifact names:
 
 ```text
 Flameshot-<version>-macos11-arm64.dmg
-Flameshot-<version>-macos11-arm64.dmg.sha256
+Flameshot-<version>-<fix-set>-macos11-arm64.dmg
 ```
+
+Each DMG is accompanied by a `.sha256` file.
 
 The app is ad-hoc signed, not notarized. On first launch, right-click the app and choose **Open**, or clear the quarantine attribute:
 
@@ -46,37 +74,32 @@ sudo xattr -rd com.apple.quarantine /Applications/Flameshot.app
 
 ## How synchronization works
 
-The GitHub Actions workflow:
+1. Scheduled run every 6 hours, or manual `workflow_dispatch`.
+2. Resolve either the latest upstream stable release or a fix set from `fixes/`.
+3. Skip the build if the release tag already exists here.
+4. Check out the upstream base tag, apply cherry-picks and patches.
+5. Build with Qt 6.7.3 and deployment target 11.0.
+6. Verify arm64 and `minos 11.0`, create a DMG, and publish a release.
 
-1. Runs on a schedule every 6 hours and can also be triggered manually.
-2. Reads the latest stable release tag from `flameshot-org/flameshot`.
-3. Skips the build if a `macos11-<upstream-tag>` release already exists here.
-4. Checks out the upstream tag, applies any patches in `patches/`.
-5. Builds with Qt 6.7.3 and deployment target 11.0.
-6. Verifies the binary architecture and `minos`, creates a DMG, and publishes it to this repository's Releases.
-
-Manual run with a specific upstream tag:
+Manual examples:
 
 ```bash
 gh workflow run sync-release.yml -f tag=v14.0.0
+gh workflow run sync-release.yml -f fix=v15.0.rc1-fix.1
 ```
 
 ## Issues
 
-Issues are welcome in this repository for problems specific to these rebuilt packages, such as:
+Issues are welcome for problems specific to these rebuilt packages, such as the DMG not opening or the app not launching on macOS 11.
 
-- The DMG does not open or install
-- The app does not launch on macOS 11
-- Crash or behavior difference compared with upstream packages
-
-Please report bugs that affect Flameshot itself to the [upstream issue tracker](https://github.com/flameshot-org/flameshot/issues).
+For bugs that affect Flameshot itself, use the [upstream issue tracker](https://github.com/flameshot-org/flameshot/issues).
 
 ## 中文简介
 
-本仓库用 Qt 6.7.3 重新打包 Flameshot 官方 release，目标是最低支持 macOS 11 (Big Sur)，目前只提供 Apple Silicon (arm64) 版本。CI 每 6 小时检查一次上游新 release，自动构建并发布到本仓库的 Releases。Intel Mac 暂不支持，有需要再跟进。
+本仓库用于给老系统重新打包 Flameshot。目前只提供 macOS 11 及以上、Apple Silicon (arm64) 的版本。CI 每 6 小时检查一次上游 release，自动构建并发布；需要修复时，用官方 tag + 最小 cherry-pick 的 fix set，例如 `v15.0.rc1-fix.1`。
 
 ## License and disclaimer
 
 - Flameshot is licensed under GPL-3.0. See [`LICENSE`](LICENSE).
 - These builds are unofficial and are not affiliated with the Flameshot project.
-- Corresponding source: the upstream tag listed in each release, plus any patches in this repository.
+- Corresponding source: the upstream base tag listed in each release, plus the listed cherry-picks and patches in this repository.

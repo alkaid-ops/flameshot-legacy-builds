@@ -1,0 +1,5 @@
+# Minimal fix set on top of the official v15.0.rc1 tag.
+# d1d7f195 = "fix(macos): bundle translations inside the app (#4986)"
+base: v15.0.rc1
+cherry_picks:
+  - d1d7f195ec3c0f8d65a4ef8e79d6950e230d9e62

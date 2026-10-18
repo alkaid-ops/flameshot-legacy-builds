@@ -9,8 +9,12 @@ on:
         description: "Upstream tag to build, for example v14.0.0. Leave empty for the latest stable release."
         required: false
         type: string
+      fix:
+        description: "Fix definition in fixes/, for example v15.0.rc1-fix.1. Overrides tag."
+        required: false
+        type: string
       include_prerelease:
-        description: "Use the latest upstream release even if it is a prerelease (only when tag is empty)."
+        description: "Use the latest upstream release even if it is a prerelease (only when tag and fix are empty)."
         required: false
         default: false
         type: boolean
@@ -34,29 +38,56 @@ jobs:
       - name: Checkout builder repository
         uses: actions/checkout@v6
 
-      - name: Resolve upstream tag
-        id: upstream
+      - name: Resolve source
+        id: source
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
+          fix="${{ inputs.fix }}"
           tag="${{ inputs.tag }}"
-          if [ -z "$tag" ]; then
-            if [ "${{ inputs.include_prerelease }}" = "true" ]; then
-              tag=$(gh api "repos/${UPSTREAM_REPOSITORY}/releases?per_page=1" --jq '.[0].tag_name')
-            else
-              tag=$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest" --jq '.tag_name')
+          cherry_picks=""
+          if [ -n "$fix" ]; then
+            manifest="fixes/${fix}.yml"
+            if [ ! -f "$manifest" ]; then
+              echo "Fix definition not found: $manifest" >&2
+              exit 1
             fi
+            tag=$(sed -n 's/^base:[[:space:]]*//p' "$manifest" | head -1)
+            cherry_picks=$(sed -n 's/^[[:space:]]*-[[:space:]]*//p' "$manifest" | grep -E '^[0-9a-f]{7,40}$' | tr '\n' ' ' || true)
+            release_tag="$fix"
+            label="$fix"
+            release_title="Flameshot ${tag} + ${fix} for macOS 11+ (arm64)"
+            echo "source_kind=fix" >> "$GITHUB_OUTPUT"
+          else
+            if [ -z "$tag" ]; then
+              if [ "${{ inputs.include_prerelease }}" = "true" ]; then
+                tag=$(gh api "repos/${UPSTREAM_REPOSITORY}/releases?per_page=1" --jq '.[0].tag_name')
+              else
+                tag=$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest" --jq '.tag_name')
+              fi
+            fi
+            release_tag="macos11-${tag}"
+            label="macos11"
+            release_title="Flameshot ${tag} for macOS 11+ (arm64)"
+            echo "source_kind=release" >> "$GITHUB_OUTPUT"
           fi
           if [ -z "$tag" ] || [ "$tag" = "null" ]; then
             echo "Failed to resolve upstream tag" >&2
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "release_tag=macos11-${tag}" >> "$GITHUB_OUTPUT"
-          echo "Upstream tag: $tag"
-          echo "Release tag: macos11-${tag}"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "source_label=$label" >> "$GITHUB_OUTPUT"
+          echo "cherry_picks=$cherry_picks" >> "$GITHUB_OUTPUT"
+          echo "SOURCE_LABEL=$label" >> "$GITHUB_ENV"
+          echo "SOURCE_TAG=$tag" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=$release_tag" >> "$GITHUB_ENV"
+          echo "RELEASE_TITLE=$release_title" >> "$GITHUB_ENV"
+          echo "Upstream base tag: $tag"
+          echo "Release tag: $release_tag"
+          echo "Cherry-picks: ${cherry_picks:-none}"
 
       - name: Check whether release already exists
         id: release_check
@@ -65,7 +96,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if gh release view "${{ steps.upstream.outputs.release_tag }}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+          if gh release view "${{ steps.source.outputs.release_tag }}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "Release already exists; nothing to do."
           else
@@ -77,9 +108,21 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: ${{ env.UPSTREAM_REPOSITORY }}
-          ref: ${{ steps.upstream.outputs.tag }}
+          ref: ${{ steps.source.outputs.tag }}
           path: upstream
-          fetch-depth: 1
+          fetch-depth: 0
+
+      - name: Apply fix cherry-picks
+        if: steps.release_check.outputs.exists == 'false' && steps.source.outputs.source_kind == 'fix'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C upstream config user.name "github-actions[bot]"
+          git -C upstream config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for sha in ${{ steps.source.outputs.cherry_picks }}; do
+            echo "Cherry-picking $sha"
+            git -C upstream cherry-pick -x "$sha"
+          done
 
       - name: Apply patches
         if: steps.release_check.outputs.exists == 'false'
@@ -184,7 +227,11 @@ jobs:
           fi
           src_dmg="build/src/Flameshot-${version}.dmg"
           test -f "$src_dmg"
-          out_dmg="Flameshot-${version}-macos11-arm64.dmg"
+          if [ "$SOURCE_LABEL" = "macos11" ]; then
+            out_dmg="Flameshot-${version}-macos11-arm64.dmg"
+          else
+            out_dmg="Flameshot-${version}-${SOURCE_LABEL}-macos11-arm64.dmg"
+          fi
           cp "$src_dmg" "$out_dmg"
           shasum -a 256 "$out_dmg" > "$out_dmg.sha256"
           echo "dmg=$out_dmg" >> "$GITHUB_OUTPUT"
@@ -197,16 +244,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="${{ steps.upstream.outputs.tag }}"
-          upstream_release_url=$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/tags/${tag}" --jq '.html_url' 2>/dev/null || true)
+          upstream_release_url=$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/tags/${SOURCE_TAG}" --jq '.html_url' 2>/dev/null || true)
           if [ -z "$upstream_release_url" ]; then
-            upstream_release_url="https://github.com/${UPSTREAM_REPOSITORY}/releases/tag/${tag}"
+            upstream_release_url="https://github.com/${UPSTREAM_REPOSITORY}/releases/tag/${SOURCE_TAG}"
           fi
           {
-            echo "Unofficial macOS 11+ (Big Sur) arm64 build of Flameshot ${tag}."
+            echo "Unofficial macOS 11+ (Big Sur) arm64 build of Flameshot ${SOURCE_TAG}."
+            echo
+            echo "Base upstream tag: ${SOURCE_TAG}"
+            if [ "${{ steps.source.outputs.source_kind }}" = "fix" ]; then
+              echo "Fix set: ${SOURCE_LABEL}"
+              echo "Cherry-picked upstream commits:"
+              for sha in ${{ steps.source.outputs.cherry_picks }}; do
+                echo "- ${sha}"
+              done
+            fi
             echo
             echo "Built from upstream source:"
-            echo "https://github.com/${UPSTREAM_REPOSITORY}/tree/${tag}"
+            echo "https://github.com/${UPSTREAM_REPOSITORY}/tree/${SOURCE_TAG}"
             echo
             echo "Build configuration:"
             echo "- Qt: ${QT_VERSION}"
@@ -219,7 +274,7 @@ jobs:
             echo
             echo "Checksum: see the attached .sha256 file."
             echo
-            echo "License: GPL-3.0. Corresponding source is the upstream tag above plus any patches in this repository."
+            echo "License: GPL-3.0. Corresponding source is the upstream tag above plus the listed cherry-picks and any patches in this repository."
             echo
             echo "This build is unofficial and is not affiliated with the Flameshot project."
           } > "$RUNNER_TEMP/release-notes.md"
@@ -232,10 +287,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh release create "${{ steps.upstream.outputs.release_tag }}" \
+          gh release create "${{ steps.source.outputs.release_tag }}" \
             "${{ steps.artifacts.outputs.dmg }}" \
             "${{ steps.artifacts.outputs.dmg }}.sha256" \
             --repo "${GITHUB_REPOSITORY}" \
-            --title "Flameshot ${{ steps.upstream.outputs.tag }} for macOS 11+ (arm64)" \
+            --title "$RELEASE_TITLE" \
             --notes-file "$RUNNER_TEMP/release-notes.md" \
             --target "$GITHUB_SHA"
