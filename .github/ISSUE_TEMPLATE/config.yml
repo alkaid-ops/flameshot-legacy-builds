@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Upstream Flameshot issue tracker
+    url: https://github.com/flameshot-org/flameshot/issues
+    about: Please report upstream Flameshot bugs there.

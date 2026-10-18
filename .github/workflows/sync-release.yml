@@ -1,0 +1,234 @@
+name: Sync upstream release
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream tag to build, for example v14.0.0. Leave empty for the latest stable release."
+        required: false
+        type: string
+      include_prerelease:
+        description: "Use the latest upstream release even if it is a prerelease (only when tag is empty)."
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: flameshot-org/flameshot
+  QT_VERSION: "6.7.3"
+  MACOS_DEPLOYMENT_TARGET: "11.0"
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v4
+
+      - name: Resolve upstream tag
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag }}"
+          if [ -z "$tag" ]; then
+            if [ "${{ inputs.include_prerelease }}" = "true" ]; then
+              tag=$(gh api "repos/${UPSTREAM_REPOSITORY}/releases?per_page=1" --jq '.[0].tag_name')
+            else
+              tag=$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest" --jq '.tag_name')
+            fi
+          fi
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            echo "Failed to resolve upstream tag" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release_tag=macos11-${tag}" >> "$GITHUB_OUTPUT"
+          echo "Upstream tag: $tag"
+          echo "Release tag: macos11-${tag}"
+
+      - name: Check whether release already exists
+        id: release_check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "${{ steps.upstream.outputs.release_tag }}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release already exists; nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout upstream source
+        if: steps.release_check.outputs.exists == 'false'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: ${{ steps.upstream.outputs.tag }}
+          path: upstream
+          fetch-depth: 1
+
+      - name: Apply patches
+        if: steps.release_check.outputs.exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          patches=(patches/*.patch)
+          if [ ${#patches[@]} -eq 0 ]; then
+            echo "No patches to apply."
+            exit 0
+          fi
+          for patch in "${patches[@]}"; do
+            echo "Applying $patch"
+            (cd upstream && git apply "../$patch")
+          done
+
+      - name: Install Qt
+        if: steps.release_check.outputs.exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/aqt-venv"
+          "$RUNNER_TEMP/aqt-venv/bin/pip" install --quiet --upgrade pip aqtinstall
+          "$RUNNER_TEMP/aqt-venv/bin/aqt" install-qt mac desktop "$QT_VERSION" clang_64 \
+            -O "$RUNNER_TEMP/Qt" \
+            --archives qtbase qtsvg qttools qttranslations
+          qt_dir="$RUNNER_TEMP/Qt/$QT_VERSION/macos"
+          test -d "$qt_dir/lib/cmake/Qt6"
+          echo "QT_DIR=$qt_dir" >> "$GITHUB_ENV"
+
+      - name: Print toolchain info
+        if: steps.release_check.outputs.exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -m
+          sw_vers
+          xcrun --sdk macosx --show-sdk-path
+          if ! command -v cmake >/dev/null 2>&1; then brew install cmake; fi
+          if ! command -v ninja >/dev/null 2>&1; then brew install ninja; fi
+          cmake --version
+          ninja --version
+          echo "Qt dir: $QT_DIR"
+
+      - name: Configure
+        if: steps.release_check.outputs.exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S upstream -B build -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_DIR" \
+            -DQt6_DIR="$QT_DIR/lib/cmake/Qt6" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOS_DEPLOYMENT_TARGET" \
+            -DCMAKE_OSX_SYSROOT="$(xcrun --sdk macosx --show-sdk-path)" \
+            -DUSE_MONOCHROME_ICON=True
+          grep CMAKE_OSX_DEPLOYMENT_TARGET build/CMakeCache.txt
+
+      - name: Build
+        if: steps.release_check.outputs.exists == 'false'
+        shell: bash
+        run: cmake --build build --parallel 3
+
+      - name: Verify architecture and deployment target
+        if: steps.release_check.outputs.exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="build/src/Flameshot.app/Contents/MacOS/flameshot"
+          test -f "$binary"
+          lipo -info "$binary"
+          lipo -info "$binary" | grep -q arm64
+          minos=$(otool -l "$binary" | awk '/LC_BUILD_VERSION/{show=1} show&&/minos/{print $2; exit}')
+          echo "minos=$minos"
+          test "$minos" = "$MACOS_DEPLOYMENT_TARGET"
+          codesign --verify --deep --strict --verbose=2 build/src/Flameshot.app
+
+      - name: Create DMG
+        if: steps.release_check.outputs.exists == 'false'
+        shell: bash
+        run: cmake --build build --target create_dmg
+
+      - name: Collect artifacts
+        if: steps.release_check.outputs.exists == 'false'
+        id: artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^set(FLAMESHOT_VERSION \(.*\))$/\1/p' upstream/CMakeLists.txt | head -1)
+          if [ -z "$version" ]; then
+            echo "Unable to determine FLAMESHOT_VERSION" >&2
+            exit 1
+          fi
+          src_dmg="build/src/Flameshot-${version}.dmg"
+          test -f "$src_dmg"
+          out_dmg="Flameshot-${version}-macos11-arm64.dmg"
+          cp "$src_dmg" "$out_dmg"
+          shasum -a 256 "$out_dmg" > "$out_dmg.sha256"
+          echo "dmg=$out_dmg" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build release notes
+        if: steps.release_check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.upstream.outputs.tag }}"
+          upstream_release_url=$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/tags/${tag}" --jq '.html_url' 2>/dev/null || true)
+          if [ -z "$upstream_release_url" ]; then
+            upstream_release_url="https://github.com/${UPSTREAM_REPOSITORY}/releases/tag/${tag}"
+          fi
+          {
+            echo "Unofficial macOS 11+ (Big Sur) arm64 build of Flameshot ${tag}."
+            echo
+            echo "Built from upstream source:"
+            echo "https://github.com/${UPSTREAM_REPOSITORY}/tree/${tag}"
+            echo
+            echo "Build configuration:"
+            echo "- Qt: ${QT_VERSION}"
+            echo "- Architecture: arm64 (Apple Silicon)"
+            echo "- Minimum macOS: ${MACOS_DEPLOYMENT_TARGET}"
+            echo "- Signing: ad hoc, not notarized"
+            echo
+            echo "Upstream release:"
+            echo "$upstream_release_url"
+            echo
+            echo "Checksum: see the attached .sha256 file."
+            echo
+            echo "License: GPL-3.0. Corresponding source is the upstream tag above plus any patches in this repository."
+            echo
+            echo "This build is unofficial and is not affiliated with the Flameshot project."
+          } > "$RUNNER_TEMP/release-notes.md"
+          cat "$RUNNER_TEMP/release-notes.md"
+
+      - name: Publish release
+        if: steps.release_check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.upstream.outputs.release_tag }}" \
+            "${{ steps.artifacts.outputs.dmg }}" \
+            "${{ steps.artifacts.outputs.dmg }}.sha256" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Flameshot ${{ steps.upstream.outputs.tag }} for macOS 11+ (arm64)" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
+            --target "$GITHUB_SHA"

@@ -1,0 +1,44 @@
+name: Bug report
+description: Report a problem specific to these rebuilt macOS 11+ packages
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This tracker is for problems specific to these rebuilt macOS 11+ packages.
+        For bugs in Flameshot itself, please use the upstream tracker:
+        https://github.com/flameshot-org/flameshot/issues
+  - type: input
+    id: macos_version
+    attributes:
+      label: macOS version
+      placeholder: "11.7.10"
+    validations:
+      required: true
+  - type: input
+    id: package_version
+    attributes:
+      label: Package version
+      placeholder: "macos11-v14.0.0"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+    validations:
+      required: false

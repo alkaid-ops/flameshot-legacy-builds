@@ -1,0 +1,5 @@
+build/
+Qt/
+*.dmg
+*.sha256
+.DS_Store
