@@ -274,6 +274,14 @@ jobs:
             echo
             echo "Checksum: see the attached .sha256 file."
             echo
+            echo "Screen Recording permission:"
+            echo "These builds are ad-hoc signed. After an update, macOS may still show the old permission as enabled while capturing only a black screen or the wallpaper."
+            echo "If that happens:"
+            echo "1. Quit Flameshot completely."
+            echo "2. Open System Settings -> Privacy & Security -> Screen Recording."
+            echo "3. Remove Flameshot with the minus button (do not just toggle it)."
+            echo "4. Launch Flameshot, enable the permission when prompted, then quit and relaunch it."
+            echo
             echo "License: GPL-3.0. Corresponding source is the upstream tag above plus the listed cherry-picks and any patches in this repository."
             echo
             echo "This build is unofficial and is not affiliated with the Flameshot project."

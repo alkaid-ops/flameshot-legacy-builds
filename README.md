@@ -72,6 +72,24 @@ The app is ad-hoc signed, not notarized. On first launch, right-click the app an
 sudo xattr -rd com.apple.quarantine /Applications/Flameshot.app
 ```
 
+## macOS Screen Recording permission
+
+These builds are ad-hoc signed, so the macOS Screen Recording permission is tied to the exact binary that was authorized. Every rebuilt or updated app has a different signature, and macOS can then show the old entry as enabled while the app only captures a black screen or the desktop wallpaper.
+
+If screenshots only show the wallpaper or a black screen, use this manual recovery. Toggling the switch alone is often not enough:
+
+1. Quit Flameshot completely (tray menu, or `pkill -x flameshot`).
+2. Open **System Settings -> Privacy & Security -> Screen Recording**.
+3. Select Flameshot and remove it with the minus button. Do not just toggle it off and on.
+4. Launch Flameshot again.
+5. When macOS asks for Screen Recording permission, open System Settings and enable Flameshot. An administrator password may be required.
+6. Quit Flameshot completely and launch it again. The permission takes effect only after a restart.
+7. Test again, for example with `flameshot full -p /tmp/test.png`.
+
+`tccutil reset ScreenCapture org.flameshot.Flameshot` can clear the entry automatically, but it does not always replace the manual remove-and-re-add step. If the switch still looks enabled after a reset, remove the entry manually.
+
+This is a limitation of ad-hoc signing, not a Flameshot bug. Official Flameshot builds have the same issue until they are signed with a stable Developer ID and notarized.
+
 ## How synchronization works
 
 1. Scheduled run every 6 hours, or manual `workflow_dispatch`.
@@ -97,6 +115,8 @@ For bugs that affect Flameshot itself, use the [upstream issue tracker](https://
 ## 中文简介
 
 本仓库用于给老系统重新打包 Flameshot。目前只提供 macOS 11 及以上、Apple Silicon (arm64) 的版本。CI 每 6 小时检查一次上游 release，自动构建并发布；需要修复时，用官方 tag + 最小 cherry-pick 的 fix set，例如 `v15.0.rc1-fix.1`。
+
+如果截图只有壁纸或黑屏，请到 `系统设置 -> 隐私与安全性 -> 屏幕录制`，先把 Flameshot 用减号删掉，再重新打开 Flameshot 授权；授权后必须完全退出并重新打开 Flameshot。只切换开关通常无效。
 
 ## License and disclaimer
 
